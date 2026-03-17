@@ -1,0 +1,27 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "awesome-claude-infra",
+  "description": "AndyKong 维护的 Claude Code 基础设施插件市场",
+  "owner": {
+    "name": "AndyKong",
+    "email": "andykong2020@example.com"
+  },
+  "plugins": [
+    {
+      "name": "claude-session-log",
+      "description": "通过 hooks 将 Claude Code transcript 与 telemetry 增量同步为项目内按时间分目录的 summary/usage 与 meta 详细日志",
+      "version": "0.3.2",
+      "author": {
+        "name": "AndyKong",
+        "email": "andykong2020@example.com"
+      },
+      "source": "./plugins/claude-session-log",
+      "homepage": "https://github.com/AndyKong2020/awesome-claude-infra/tree/main/plugins/claude-session-log",
+      "repository": "https://github.com/AndyKong2020/awesome-claude-infra",
+      "license": "MIT",
+      "category": "utilities",
+      "keywords": ["logging", "hooks", "markdown", "telemetry", "transcript"],
+      "strict": true
+    }
+  ]
+}
