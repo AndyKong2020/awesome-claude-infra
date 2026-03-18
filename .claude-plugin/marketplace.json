@@ -22,6 +22,24 @@
       "category": "utilities",
       "keywords": ["logging", "hooks", "markdown", "telemetry", "transcript"],
       "strict": true
+    },
+    {
+      "name": "gitcode-api",
+      "description": "将 GitCode REST API 文档、索引和请求辅助脚本打包为 Claude Code 技能插件",
+      "version": "1.0.0",
+      "author": {
+        "name": "AndyKong",
+        "email": "andykong2020@example.com"
+      },
+      "source": {
+        "source": "github",
+        "repo": "AndyKong2020/gitcode-api-skill"
+      },
+      "homepage": "https://github.com/AndyKong2020/gitcode-api-skill",
+      "repository": "https://github.com/AndyKong2020/gitcode-api-skill",
+      "category": "development",
+      "keywords": ["gitcode", "api", "skill", "docs", "automation"],
+      "strict": true
     }
   ]
 }
