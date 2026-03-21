@@ -23,7 +23,7 @@ TOOL_RESULT_INLINE_LIMIT = 4000
 LARGE_TELEMETRY_INLINE_LIMIT = 2000
 SUMMARY_TEXT_INLINE_LIMIT = 4000
 SUMMARY_VALUE_INLINE_LIMIT = 1200
-STATE_VERSION = 1
+STATE_VERSION = 2
 BEIJING_TIMEZONE = timezone(timedelta(hours=8))
 
 IMAGE_EXTENSIONS = {
@@ -139,6 +139,14 @@ class SyncResult:
     log_root: Path
 
 
+@dataclass
+class AgentBucket:
+    key: str
+    raw_id: str
+    kind: str
+    events: list[TranscriptEvent]
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Sync Claude Code transcript and telemetry into project-local Markdown logs."
@@ -219,19 +227,29 @@ def sync_session_log(
     log_root = project_root / ".claude-log"
     meta_root = log_root / "meta"
     state_dir = meta_root / "state"
-    artifacts_root = meta_root / "artifacts"
     state_dir.mkdir(parents=True, exist_ok=True)
-    artifacts_root.mkdir(parents=True, exist_ok=True)
 
     session_paths = resolve_session_paths(hook_input)
     state_path = state_dir / f"{session_paths.session_id}.json"
     state = load_state(state_path)
 
     transcript_events = load_transcript_events(session_paths)
+    agent_buckets = bucket_transcript_events(transcript_events)
+    first_timestamp = first_known_timestamp(transcript_events) or utcnow()
 
-    session_artifacts_dir = artifacts_root / session_paths.session_id
-    session_artifacts_dir.mkdir(parents=True, exist_ok=True)
-    telemetry_artifact_path = session_artifacts_dir / "telemetry.jsonl"
+    meta_session_dir_relpath, markdown_relpath, merged_markdown_relpath = (
+        resolve_meta_session_relpaths(
+            session_id=session_paths.session_id,
+            first_timestamp=first_timestamp,
+            state=state,
+        )
+    )
+    meta_session_dir = log_root / meta_session_dir_relpath
+    meta_session_dir.mkdir(parents=True, exist_ok=True)
+
+    shared_artifacts_dir = meta_session_dir / "artifacts" / "shared"
+    shared_artifacts_dir.mkdir(parents=True, exist_ok=True)
+    telemetry_artifact_path = shared_artifacts_dir / "telemetry.jsonl"
     telemetry_records, telemetry_state = ingest_telemetry(
         session_id=session_paths.session_id,
         telemetry_dir=telemetry_dir
@@ -243,10 +261,6 @@ def sync_session_log(
 
     session_title = derive_session_title(transcript_events)
     session_summary = derive_session_summary(transcript_events)
-    first_timestamp = first_known_timestamp(transcript_events) or utcnow()
-    markdown_relpath = state.get("markdown_relpath") or default_markdown_relpath(
-        session_paths.session_id, first_timestamp
-    )
     legacy_summary_relpaths = legacy_summary_relpaths_for_session(
         session_paths.session_id, state
     )
@@ -258,55 +272,72 @@ def sync_session_log(
             log_root=log_root,
         )
     )
-    session_markdown_path = log_root / markdown_relpath
+    session_meta_index_path = log_root / markdown_relpath
+    session_markdown_path = log_root / merged_markdown_relpath
+    session_meta_index_path.parent.mkdir(parents=True, exist_ok=True)
     session_markdown_path.parent.mkdir(parents=True, exist_ok=True)
     summary_path = log_root / summary_markdown_relpath
     usage_path = log_root / usage_relpath
     summary_path.parent.mkdir(parents=True, exist_ok=True)
+    agent_summary_relpaths = build_summary_agent_relpaths(summary_dir_relpath, agent_buckets)
+    agent_meta_relpaths = build_meta_agent_relpaths(meta_session_dir_relpath, agent_buckets)
+    agent_output_paths = build_agent_output_paths(
+        log_root=log_root,
+        agent_buckets=agent_buckets,
+        summary_agents_relpaths=agent_summary_relpaths,
+        meta_agents_relpaths=agent_meta_relpaths,
+    )
     for legacy_path in (log_root / "summary.md", log_root / "usage.json"):
         if legacy_path.exists():
             legacy_path.unlink()
 
-    render_artifacts_dir = session_artifacts_dir / "rendered"
-    if render_artifacts_dir.exists():
-        shutil.rmtree(render_artifacts_dir)
-    render_artifacts_dir.mkdir(parents=True, exist_ok=True)
-    artifact_store = ArtifactStore(render_artifacts_dir=render_artifacts_dir)
-    render_ctx = RenderContext(
+    shared_render_dir = shared_artifacts_dir / "rendered"
+    reset_render_dir(shared_render_dir)
+    shared_artifact_store = ArtifactStore(render_artifacts_dir=shared_render_dir)
+    merged_render_ctx = RenderContext(
         session_id=session_paths.session_id,
         markdown_path=session_markdown_path,
-        artifact_store=artifact_store,
+        artifact_store=shared_artifact_store,
     )
-    summary_render_ctx = RenderContext(
+    root_summary_render_ctx = RenderContext(
         session_id=session_paths.session_id,
         markdown_path=summary_path,
-        artifact_store=artifact_store,
+        artifact_store=shared_artifact_store,
+    )
+    session_meta_index_render_ctx = RenderContext(
+        session_id=session_paths.session_id,
+        markdown_path=session_meta_index_path,
+        artifact_store=shared_artifact_store,
     )
 
     session_markdown = build_session_markdown(
         session_id=session_paths.session_id,
-        session_title=session_title,
+        session_title=decorate_page_title(session_title, "merged"),
         session_summary=session_summary,
         transcript_events=transcript_events,
         telemetry_records=telemetry_records,
         hook_input=hook_input,
-        render_ctx=render_ctx,
+        render_ctx=merged_render_ctx,
         transcript_path=session_paths.transcript_path,
     )
     write_text(session_markdown_path, session_markdown)
-    summary_markdown = build_summary_markdown(
+
+    summary_markdown = build_root_summary_markdown(
         session_id=session_paths.session_id,
         session_title=session_title,
         session_summary=session_summary,
         transcript_events=transcript_events,
         telemetry_records=telemetry_records,
         hook_input=hook_input,
-        render_ctx=summary_render_ctx,
-        session_markdown_path=session_markdown_path,
-        index_path=meta_root / "index.md",
+        render_ctx=root_summary_render_ctx,
+        session_meta_index_path=session_meta_index_path,
+        merged_markdown_path=session_markdown_path,
         usage_path=usage_path,
+        agent_buckets=agent_buckets,
+        agent_output_paths=agent_output_paths,
     )
     write_text(summary_path, summary_markdown)
+
     write_json(
         usage_path,
         build_usage_payload(
@@ -319,10 +350,96 @@ def sync_session_log(
             transcript_path=session_paths.transcript_path,
             session_markdown_path=session_markdown_path,
             summary_path=summary_path,
-            index_path=meta_root / "index.md",
+            index_path=session_meta_index_path,
             telemetry_artifact_path=telemetry_artifact_path,
         ),
     )
+
+    session_meta_index_markdown = build_session_meta_index_markdown(
+        session_id=session_paths.session_id,
+        session_title=session_title,
+        session_summary=session_summary,
+        transcript_events=transcript_events,
+        telemetry_records=telemetry_records,
+        hook_input=hook_input,
+        render_ctx=session_meta_index_render_ctx,
+        root_summary_path=summary_path,
+        root_usage_path=usage_path,
+        merged_markdown_path=session_markdown_path,
+        global_index_path=meta_root / "index.md",
+        telemetry_artifact_path=telemetry_artifact_path,
+        agent_buckets=agent_buckets,
+        agent_output_paths=agent_output_paths,
+    )
+    write_text(session_meta_index_path, session_meta_index_markdown)
+
+    for bucket in agent_buckets:
+        output_paths = agent_output_paths[bucket.key]
+        agent_summary_path = output_paths["summary_path"]
+        agent_usage_path = output_paths["usage_path"]
+        agent_meta_path = output_paths["meta_path"]
+        agent_summary_path.parent.mkdir(parents=True, exist_ok=True)
+        agent_meta_path.parent.mkdir(parents=True, exist_ok=True)
+
+        agent_render_dir = meta_session_dir / "artifacts" / bucket.key / "rendered"
+        reset_render_dir(agent_render_dir)
+        agent_artifact_store = ArtifactStore(render_artifacts_dir=agent_render_dir)
+        agent_summary_render_ctx = RenderContext(
+            session_id=session_paths.session_id,
+            markdown_path=agent_summary_path,
+            artifact_store=agent_artifact_store,
+        )
+        agent_meta_render_ctx = RenderContext(
+            session_id=session_paths.session_id,
+            markdown_path=agent_meta_path,
+            artifact_store=agent_artifact_store,
+        )
+        agent_title = decorate_page_title(session_title, bucket.raw_id)
+
+        agent_meta_markdown = build_session_markdown(
+            session_id=session_paths.session_id,
+            session_title=agent_title,
+            session_summary=None,
+            transcript_events=bucket.events,
+            telemetry_records=[],
+            hook_input=hook_input,
+            render_ctx=agent_meta_render_ctx,
+            transcript_path=session_paths.transcript_path,
+        )
+        write_text(agent_meta_path, agent_meta_markdown)
+
+        agent_summary_markdown = build_summary_markdown(
+            session_id=session_paths.session_id,
+            session_title=agent_title,
+            session_summary=None,
+            transcript_events=bucket.events,
+            telemetry_records=[],
+            hook_input=hook_input,
+            render_ctx=agent_summary_render_ctx,
+            session_markdown_path=agent_meta_path,
+            index_path=session_meta_index_path,
+            usage_path=agent_usage_path,
+        )
+        write_text(agent_summary_path, agent_summary_markdown)
+
+        write_json(
+            agent_usage_path,
+            build_usage_payload(
+                session_id=session_paths.session_id,
+                session_title=agent_title,
+                session_summary=None,
+                transcript_events=bucket.events,
+                telemetry_records=[],
+                hook_input=hook_input,
+                transcript_path=session_paths.transcript_path,
+                session_markdown_path=agent_meta_path,
+                summary_path=agent_summary_path,
+                index_path=session_meta_index_path,
+                telemetry_artifact_path=telemetry_artifact_path,
+                agent_bucket=bucket,
+            ),
+        )
+
     if legacy_summary_relpaths is not None and legacy_summary_relpaths != (
         summary_dir_relpath,
         summary_markdown_relpath,
@@ -334,9 +451,12 @@ def sync_session_log(
         old_state=state,
         session_id=session_paths.session_id,
         markdown_relpath=markdown_relpath,
+        merged_markdown_relpath=merged_markdown_relpath,
         summary_dir_relpath=summary_dir_relpath,
         summary_markdown_relpath=summary_markdown_relpath,
         usage_relpath=usage_relpath,
+        summary_agents_relpaths=agent_summary_relpaths,
+        meta_agents_relpaths=agent_meta_relpaths,
         session_title=session_title,
         session_summary=session_summary,
         transcript_events=transcript_events,
@@ -429,6 +549,115 @@ def load_transcript_events(session_paths: SessionPaths) -> list[TranscriptEvent]
             event.sequence,
         ),
     )
+
+
+def classify_agent_bucket(event: TranscriptEvent) -> tuple[str, str]:
+    if not is_sidechain_event(event.entry):
+        return ("main", "main")
+    raw_id = event.entry.get("agentId") or event.source_label or "sidechain"
+    return (str(raw_id), "subagent")
+
+
+def make_agent_key(raw_id: str, kind: str, used_keys: set[str]) -> str:
+    if kind == "main":
+        return "main"
+    candidate = slugify(raw_id) or "agent"
+    if candidate == "main":
+        candidate = "agent"
+    if candidate not in used_keys:
+        return candidate
+    suffix = hashlib.sha1(raw_id.encode("utf-8")).hexdigest()[:8]
+    candidate = f"{candidate}-{suffix}"
+    if candidate not in used_keys:
+        return candidate
+    attempt = 2
+    while True:
+        next_candidate = f"{candidate}-{attempt:02d}"
+        if next_candidate not in used_keys:
+            return next_candidate
+        attempt += 1
+
+
+def bucket_transcript_events(events: list[TranscriptEvent]) -> list[AgentBucket]:
+    grouped: dict[str, dict[str, Any]] = {}
+    for event in events:
+        raw_id, kind = classify_agent_bucket(event)
+        if raw_id not in grouped:
+            grouped[raw_id] = {"kind": kind, "events": []}
+        grouped[raw_id]["events"].append(event)
+
+    ordered_raw_ids = ["main"] if "main" in grouped else []
+    ordered_raw_ids.extend(sorted(raw_id for raw_id in grouped if raw_id != "main"))
+
+    buckets: list[AgentBucket] = []
+    used_keys: set[str] = set()
+    for raw_id in ordered_raw_ids:
+        group = grouped[raw_id]
+        key = make_agent_key(raw_id, str(group["kind"]), used_keys)
+        used_keys.add(key)
+        buckets.append(
+            AgentBucket(
+                key=key,
+                raw_id=raw_id,
+                kind=str(group["kind"]),
+                events=list(group["events"]),
+            )
+        )
+    return buckets
+
+
+def build_summary_agent_relpaths(
+    summary_dir_relpath: str,
+    agent_buckets: list[AgentBucket],
+) -> dict[str, dict[str, str]]:
+    relpaths: dict[str, dict[str, str]] = {}
+    for bucket in agent_buckets:
+        agent_dir_relpath = f"{summary_dir_relpath}/agents/{bucket.key}"
+        relpaths[bucket.key] = {
+            "agent_id": bucket.raw_id,
+            "agent_kind": bucket.kind,
+            "summary_markdown_relpath": f"{agent_dir_relpath}/summary.md",
+            "usage_relpath": f"{agent_dir_relpath}/usage.json",
+        }
+    return relpaths
+
+
+def build_meta_agent_relpaths(
+    meta_session_dir_relpath: str,
+    agent_buckets: list[AgentBucket],
+) -> dict[str, dict[str, str]]:
+    relpaths: dict[str, dict[str, str]] = {}
+    for bucket in agent_buckets:
+        agent_dir_relpath = f"{meta_session_dir_relpath}/agents/{bucket.key}"
+        relpaths[bucket.key] = {
+            "agent_id": bucket.raw_id,
+            "agent_kind": bucket.kind,
+            "markdown_relpath": f"{agent_dir_relpath}/session.md",
+        }
+    return relpaths
+
+
+def build_agent_output_paths(
+    log_root: Path,
+    agent_buckets: list[AgentBucket],
+    summary_agents_relpaths: dict[str, dict[str, str]],
+    meta_agents_relpaths: dict[str, dict[str, str]],
+) -> dict[str, dict[str, Any]]:
+    output_paths: dict[str, dict[str, Any]] = {}
+    for bucket in agent_buckets:
+        summary_info = summary_agents_relpaths[bucket.key]
+        meta_info = meta_agents_relpaths[bucket.key]
+        output_paths[bucket.key] = {
+            "agent_id": bucket.raw_id,
+            "agent_kind": bucket.kind,
+            "summary_relpath": summary_info["summary_markdown_relpath"],
+            "usage_relpath": summary_info["usage_relpath"],
+            "meta_relpath": meta_info["markdown_relpath"],
+            "summary_path": log_root / summary_info["summary_markdown_relpath"],
+            "usage_path": log_root / summary_info["usage_relpath"],
+            "meta_path": log_root / meta_info["markdown_relpath"],
+        }
+    return output_paths
 
 
 def load_single_jsonl(path: Path, source_label: str, start_sequence: int) -> list[TranscriptEvent]:
@@ -715,6 +944,229 @@ def build_session_markdown(
     return "\n".join(line.rstrip() for line in lines).rstrip() + "\n"
 
 
+def build_root_summary_markdown(
+    session_id: str,
+    session_title: str,
+    session_summary: str | None,
+    transcript_events: list[TranscriptEvent],
+    telemetry_records: list[dict[str, Any]],
+    hook_input: dict[str, Any],
+    render_ctx: RenderContext,
+    session_meta_index_path: Path,
+    merged_markdown_path: Path,
+    usage_path: Path,
+    agent_buckets: list[AgentBucket],
+    agent_output_paths: dict[str, dict[str, Any]],
+) -> str:
+    first_ts = first_known_timestamp(transcript_events)
+    last_ts = last_known_timestamp(transcript_events)
+    common_meta = derive_common_session_metadata(transcript_events)
+    transcript_usage = summarize_transcript_usage(transcript_events)
+    telemetry_summary = summarize_telemetry(telemetry_records)
+    models = collect_session_models(transcript_events, telemetry_records)
+
+    lines: list[str] = [f"# {session_title}", ""]
+    lines.extend(
+        bullet_lines(
+            [
+                ("Session ID", session_id),
+                ("Started at", format_timestamp(first_ts)),
+                ("Last event at", format_timestamp(last_ts)),
+                ("Last synced at", format_timestamp(utcnow())),
+                ("Working directory", common_meta.get("cwd")),
+                ("Git branch", common_meta.get("gitBranch")),
+                ("Last hook event", hook_input.get("hook_event_name")),
+                ("Models", ", ".join(models) or "-"),
+                ("Meta index", f"[Open session meta index]({render_ctx.relative_link(session_meta_index_path)})"),
+                ("Merged detail", f"[Open merged detail]({render_ctx.relative_link(merged_markdown_path)})"),
+                ("Usage JSON", f"[Open usage JSON]({render_ctx.relative_link(usage_path)})"),
+            ]
+        )
+    )
+    lines.append("")
+
+    if session_summary:
+        lines.append("## Session Summary")
+        lines.extend(render_text_body(session_summary))
+        lines.append("")
+
+    lines.append("## Aggregate Usage")
+    lines.extend(
+        bullet_lines(
+            [
+                ("Transcript input tokens", format_int(transcript_usage.get("input_tokens", 0))),
+                ("Transcript output tokens", format_int(transcript_usage.get("output_tokens", 0))),
+                (
+                    "Transcript cache read input tokens",
+                    format_int(transcript_usage.get("cache_read_input_tokens", 0)),
+                ),
+                (
+                    "Transcript cache creation input tokens",
+                    format_int(transcript_usage.get("cache_creation_input_tokens", 0)),
+                ),
+                ("Telemetry API success events", str(telemetry_summary["api_success_count"])),
+                ("Telemetry cost USD", f"{telemetry_summary['cost_usd']:.6f}"),
+                ("Telemetry input tokens", format_int(telemetry_summary["input_tokens"])),
+                ("Telemetry output tokens", format_int(telemetry_summary["output_tokens"])),
+                (
+                    "Telemetry cached input tokens",
+                    format_int(telemetry_summary["cached_input_tokens"]),
+                ),
+                ("Telemetry total duration ms", format_int(telemetry_summary["duration_ms_total"])),
+                ("Telemetry average TTFT ms", format_int(telemetry_summary["average_ttft_ms"])),
+            ]
+        )
+    )
+    lines.append("")
+
+    lines.append("## Agents")
+    lines.append("")
+    if not agent_buckets:
+        lines.append("_No agent buckets were captured for this session yet._")
+        lines.append("")
+        return "\n".join(line.rstrip() for line in lines).rstrip() + "\n"
+
+    for bucket in agent_buckets:
+        event_counts = Counter(event.entry_type for event in bucket.events)
+        bucket_output_paths = agent_output_paths[bucket.key]
+        bucket_models = collect_session_models(bucket.events, [])
+        lines.append(f"### `{bucket.raw_id}`")
+        lines.append("")
+        lines.extend(
+            bullet_lines(
+                [
+                    ("Kind", bucket.kind),
+                    ("Agent key", bucket.key),
+                    ("Event count", str(len(bucket.events))),
+                    ("Assistant events", str(event_counts.get("assistant", 0))),
+                    ("User events", str(event_counts.get("user", 0))),
+                    ("Started at", format_timestamp(first_known_timestamp(bucket.events))),
+                    ("Last event at", format_timestamp(last_known_timestamp(bucket.events))),
+                    ("Models", ", ".join(bucket_models) or "-"),
+                    (
+                        "Summary",
+                        f"[Open agent summary]({render_ctx.relative_link(bucket_output_paths['summary_path'])})",
+                    ),
+                    (
+                        "Usage JSON",
+                        f"[Open agent usage]({render_ctx.relative_link(bucket_output_paths['usage_path'])})",
+                    ),
+                    (
+                        "Detailed log",
+                        f"[Open agent detail]({render_ctx.relative_link(bucket_output_paths['meta_path'])})",
+                    ),
+                ]
+            )
+        )
+        lines.append("")
+
+    return "\n".join(line.rstrip() for line in lines).rstrip() + "\n"
+
+
+def build_session_meta_index_markdown(
+    session_id: str,
+    session_title: str,
+    session_summary: str | None,
+    transcript_events: list[TranscriptEvent],
+    telemetry_records: list[dict[str, Any]],
+    hook_input: dict[str, Any],
+    render_ctx: RenderContext,
+    root_summary_path: Path,
+    root_usage_path: Path,
+    merged_markdown_path: Path,
+    global_index_path: Path,
+    telemetry_artifact_path: Path,
+    agent_buckets: list[AgentBucket],
+    agent_output_paths: dict[str, dict[str, Any]],
+) -> str:
+    first_ts = first_known_timestamp(transcript_events)
+    last_ts = last_known_timestamp(transcript_events)
+    common_meta = derive_common_session_metadata(transcript_events)
+    models = collect_session_models(transcript_events, telemetry_records)
+
+    lines: list[str] = [f"# {session_title} Meta Index", ""]
+    lines.extend(
+        bullet_lines(
+            [
+                ("Session ID", session_id),
+                ("Started at", format_timestamp(first_ts)),
+                ("Last event at", format_timestamp(last_ts)),
+                ("Last synced at", format_timestamp(utcnow())),
+                ("Working directory", common_meta.get("cwd")),
+                ("Git branch", common_meta.get("gitBranch")),
+                ("Last hook event", hook_input.get("hook_event_name")),
+                ("Models", ", ".join(models) or "-"),
+                ("Root summary", f"[Open root summary]({render_ctx.relative_link(root_summary_path)})"),
+                ("Root usage", f"[Open root usage JSON]({render_ctx.relative_link(root_usage_path)})"),
+                ("Merged detail", f"[Open merged detail]({render_ctx.relative_link(merged_markdown_path)})"),
+                ("Global meta index", f"[Open global meta index]({render_ctx.relative_link(global_index_path)})"),
+                (
+                    "Shared telemetry",
+                    f"[Open shared telemetry JSONL]({render_ctx.relative_link(telemetry_artifact_path)})",
+                ),
+                (
+                    "Shared rendered artifacts",
+                    os.path.relpath(telemetry_artifact_path.parent / "rendered", render_ctx.markdown_path.parent),
+                ),
+            ]
+        )
+    )
+    lines.append("")
+
+    if session_summary:
+        lines.append("## Session Summary")
+        lines.extend(render_text_body(session_summary))
+        lines.append("")
+
+    lines.append("## Agent Views")
+    lines.append("")
+    if not agent_buckets:
+        lines.append("_No agent buckets were captured for this session yet._")
+        lines.append("")
+        return "\n".join(line.rstrip() for line in lines).rstrip() + "\n"
+
+    for bucket in agent_buckets:
+        event_counts = Counter(event.entry_type for event in bucket.events)
+        bucket_output_paths = agent_output_paths[bucket.key]
+        lines.append(f"### `{bucket.raw_id}`")
+        lines.append("")
+        lines.extend(
+            bullet_lines(
+                [
+                    ("Kind", bucket.kind),
+                    ("Agent key", bucket.key),
+                    ("Event count", str(len(bucket.events))),
+                    ("Assistant events", str(event_counts.get("assistant", 0))),
+                    ("User events", str(event_counts.get("user", 0))),
+                    ("Started at", format_timestamp(first_known_timestamp(bucket.events))),
+                    ("Last event at", format_timestamp(last_known_timestamp(bucket.events))),
+                    (
+                        "Summary",
+                        f"[Open summary]({render_ctx.relative_link(bucket_output_paths['summary_path'])})",
+                    ),
+                    (
+                        "Usage JSON",
+                        f"[Open usage JSON]({render_ctx.relative_link(bucket_output_paths['usage_path'])})",
+                    ),
+                    (
+                        "Detailed log",
+                        f"[Open detail]({render_ctx.relative_link(bucket_output_paths['meta_path'])})",
+                    ),
+                    (
+                        "Rendered artifacts",
+                        os.path.relpath(
+                            bucket_output_paths["meta_path"].parent.parent.parent / "artifacts" / bucket.key / "rendered",
+                            render_ctx.markdown_path.parent,
+                        ),
+                    ),
+                ]
+            )
+        )
+        lines.append("")
+
+    return "\n".join(line.rstrip() for line in lines).rstrip() + "\n"
+
+
 def build_summary_markdown(
     session_id: str,
     session_title: str,
@@ -759,20 +1211,21 @@ def build_summary_markdown(
         lines.extend(render_text_body(session_summary))
         lines.append("")
 
-    lines.append("## Usage")
-    lines.extend(
-        bullet_lines(
+    usage_items: list[tuple[str, Any]] = [
+        ("Transcript input tokens", format_int(transcript_usage.get("input_tokens", 0))),
+        ("Transcript output tokens", format_int(transcript_usage.get("output_tokens", 0))),
+        (
+            "Transcript cache read input tokens",
+            format_int(transcript_usage.get("cache_read_input_tokens", 0)),
+        ),
+        (
+            "Transcript cache creation input tokens",
+            format_int(transcript_usage.get("cache_creation_input_tokens", 0)),
+        ),
+    ]
+    if telemetry_records:
+        usage_items.extend(
             [
-                ("Transcript input tokens", format_int(transcript_usage.get("input_tokens", 0))),
-                ("Transcript output tokens", format_int(transcript_usage.get("output_tokens", 0))),
-                (
-                    "Transcript cache read input tokens",
-                    format_int(transcript_usage.get("cache_read_input_tokens", 0)),
-                ),
-                (
-                    "Transcript cache creation input tokens",
-                    format_int(transcript_usage.get("cache_creation_input_tokens", 0)),
-                ),
                 ("Telemetry API success events", str(telemetry_summary["api_success_count"])),
                 ("Telemetry cost USD", f"{telemetry_summary['cost_usd']:.6f}"),
                 ("Telemetry input tokens", format_int(telemetry_summary["input_tokens"])),
@@ -785,7 +1238,8 @@ def build_summary_markdown(
                 ("Telemetry average TTFT ms", format_int(telemetry_summary["average_ttft_ms"])),
             ]
         )
-    )
+    lines.append("## Usage")
+    lines.extend(bullet_lines(usage_items))
     lines.append("")
 
     lines.append("## Conversation")
@@ -818,6 +1272,7 @@ def build_usage_payload(
     summary_path: Path,
     index_path: Path,
     telemetry_artifact_path: Path,
+    agent_bucket: AgentBucket | None = None,
 ) -> dict[str, Any]:
     first_ts = first_known_timestamp(transcript_events)
     last_ts = last_known_timestamp(transcript_events)
@@ -826,7 +1281,7 @@ def build_usage_payload(
     telemetry_summary = summarize_telemetry(telemetry_records)
     event_counts = Counter(event.entry_type for event in transcript_events)
 
-    return {
+    payload = {
         "version": 1,
         "session": {
             "id": session_id,
@@ -862,7 +1317,9 @@ def build_usage_payload(
                 transcript_usage.get("cache_creation_input_tokens", 0)
             ),
         },
-        "telemetry": {
+    }
+    if agent_bucket is None:
+        payload["telemetry"] = {
             "api_success_count": int(telemetry_summary["api_success_count"]),
             "cost_usd": float(telemetry_summary["cost_usd"]),
             "input_tokens": int(telemetry_summary["input_tokens"]),
@@ -871,8 +1328,16 @@ def build_usage_payload(
             "duration_ms_total": int(telemetry_summary["duration_ms_total"]),
             "average_ttft_ms": int(telemetry_summary["average_ttft_ms"]),
             "models": list(telemetry_summary["models"]),
-        },
-    }
+        }
+    else:
+        payload["agent"] = {
+            "id": agent_bucket.raw_id,
+            "key": agent_bucket.key,
+            "kind": agent_bucket.kind,
+        }
+        payload["telemetry"] = None
+        payload["telemetry_scope"] = "session_only"
+    return payload
 
 
 def render_summary_conversation(
@@ -1860,8 +2325,37 @@ def last_known_timestamp(events: Iterable[TranscriptEvent]) -> datetime | None:
     return latest
 
 
-def default_markdown_relpath(session_id: str, timestamp: datetime) -> str:
-    return f"meta/sessions/{timestamp.year:04d}/{timestamp.month:02d}/{session_id}.md"
+def default_meta_session_relpaths(
+    session_id: str,
+    timestamp: datetime,
+) -> tuple[str, str, str]:
+    session_dir_relpath = f"meta/sessions/{timestamp.year:04d}/{timestamp.month:02d}/{session_id}"
+    return (
+        session_dir_relpath,
+        f"{session_dir_relpath}/index.md",
+        f"{session_dir_relpath}/merged/session.md",
+    )
+
+
+def resolve_meta_session_relpaths(
+    session_id: str,
+    first_timestamp: datetime,
+    state: dict[str, Any],
+) -> tuple[str, str, str]:
+    markdown_relpath = state.get("markdown_relpath")
+    merged_markdown_relpath = state.get("merged_markdown_relpath")
+    if (
+        isinstance(markdown_relpath, str)
+        and markdown_relpath.endswith("/index.md")
+        and isinstance(merged_markdown_relpath, str)
+        and merged_markdown_relpath.endswith("/session.md")
+    ):
+        return (
+            str(Path(markdown_relpath).parent).replace("\\", "/"),
+            markdown_relpath,
+            merged_markdown_relpath,
+        )
+    return default_meta_session_relpaths(session_id, first_timestamp)
 
 
 def format_summary_dir_name(timestamp: datetime) -> str:
@@ -1956,9 +2450,12 @@ def build_state_payload(
     old_state: dict[str, Any],
     session_id: str,
     markdown_relpath: str,
+    merged_markdown_relpath: str,
     summary_dir_relpath: str,
     summary_markdown_relpath: str,
     usage_relpath: str,
+    summary_agents_relpaths: dict[str, dict[str, str]],
+    meta_agents_relpaths: dict[str, dict[str, str]],
     session_title: str,
     session_summary: str | None,
     transcript_events: list[TranscriptEvent],
@@ -1976,9 +2473,12 @@ def build_state_payload(
         "title": session_title,
         "summary": session_summary,
         "markdown_relpath": markdown_relpath,
+        "merged_markdown_relpath": merged_markdown_relpath,
         "summary_dir_relpath": summary_dir_relpath,
         "summary_markdown_relpath": summary_markdown_relpath,
         "usage_relpath": usage_relpath,
+        "summary_agents_relpaths": summary_agents_relpaths,
+        "meta_agents_relpaths": meta_agents_relpaths,
         "project_root": str(project_root),
         "cwd": common_meta.get("cwd"),
         "gitBranch": common_meta.get("gitBranch"),
@@ -2131,6 +2631,16 @@ def write_text_artifact(
     extension: str = "txt",
 ) -> Path:
     return render_ctx.artifact_store.write_text(artifact_prefix, content, extension=extension)
+
+
+def reset_render_dir(path: Path) -> None:
+    if path.exists():
+        shutil.rmtree(path)
+    path.mkdir(parents=True, exist_ok=True)
+
+
+def decorate_page_title(session_title: str, label: str) -> str:
+    return f"{session_title} [{label}]"
 
 
 def code_block(text: str, language: str = "") -> list[str]:

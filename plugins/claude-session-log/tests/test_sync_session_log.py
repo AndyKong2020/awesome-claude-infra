@@ -416,6 +416,25 @@ class SyncSessionLogTests(unittest.TestCase):
             session.pop("last_synced_at", None)
         return normalized
 
+    def get_output_paths(self, result) -> dict[str, Path]:
+        summary_root = result.summary_path.parent
+        meta_session_dir = result.session_markdown_path.parent.parent
+        return {
+            "summary_root": summary_root,
+            "meta_session_dir": meta_session_dir,
+            "merged_meta": meta_session_dir / "merged" / "session.md",
+            "main_summary": summary_root / "agents" / "main" / "summary.md",
+            "main_usage": summary_root / "agents" / "main" / "usage.json",
+            "subagent_summary": summary_root / "agents" / "agent-helper" / "summary.md",
+            "subagent_usage": summary_root / "agents" / "agent-helper" / "usage.json",
+            "meta_index": meta_session_dir / "index.md",
+            "main_meta": meta_session_dir / "agents" / "main" / "session.md",
+            "subagent_meta": meta_session_dir / "agents" / "agent-helper" / "session.md",
+            "shared_rendered": meta_session_dir / "artifacts" / "shared" / "rendered",
+            "main_rendered": meta_session_dir / "artifacts" / "main" / "rendered",
+            "subagent_rendered": meta_session_dir / "artifacts" / "agent-helper" / "rendered",
+        }
+
     def test_sync_renders_supported_events_and_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             fixture = self.make_fixture(Path(tmpdir))
@@ -430,10 +449,32 @@ class SyncSessionLogTests(unittest.TestCase):
                 telemetry_dir=fixture["telemetry_dir"],
             )
 
+            paths = self.get_output_paths(result)
             session_md = result.session_markdown_path.read_text(encoding="utf-8")
             summary_md = result.summary_path.read_text(encoding="utf-8")
+            main_summary_md = paths["main_summary"].read_text(encoding="utf-8")
+            subagent_summary_md = paths["subagent_summary"].read_text(encoding="utf-8")
+            meta_index_md = paths["meta_index"].read_text(encoding="utf-8")
+            main_meta_md = paths["main_meta"].read_text(encoding="utf-8")
+            subagent_meta_md = paths["subagent_meta"].read_text(encoding="utf-8")
             usage_payload = json.loads(result.usage_path.read_text(encoding="utf-8"))
-            self.assertIn("# Claude Session: Audit session summary", session_md)
+            main_usage_payload = json.loads(paths["main_usage"].read_text(encoding="utf-8"))
+            subagent_usage_payload = json.loads(
+                paths["subagent_usage"].read_text(encoding="utf-8")
+            )
+
+            self.assertEqual(paths["merged_meta"], result.session_markdown_path)
+            self.assertTrue(result.summary_path.exists())
+            self.assertTrue(result.usage_path.exists())
+            self.assertTrue(paths["main_summary"].exists())
+            self.assertTrue(paths["main_usage"].exists())
+            self.assertTrue(paths["subagent_summary"].exists())
+            self.assertTrue(paths["subagent_usage"].exists())
+            self.assertTrue(paths["meta_index"].exists())
+            self.assertTrue(paths["main_meta"].exists())
+            self.assertTrue(paths["subagent_meta"].exists())
+
+            self.assertIn("# Claude Session: Audit session summary [merged]", session_md)
             self.assertIn("`queue-operation`", session_md)
             self.assertIn("`file-history-snapshot`", session_md)
             self.assertIn("`last-prompt`", session_md)
@@ -443,11 +484,11 @@ class SyncSessionLogTests(unittest.TestCase):
             self.assertIn("0.012345", session_md)
             self.assertIn("Remember to capture the rate limit issue.", session_md)
 
-            artifact_files = list(
-                (result.log_root / "meta" / "artifacts" / "session-123" / "rendered").glob("*")
-            )
-            self.assertTrue(any(path.suffix == ".png" for path in artifact_files))
-            self.assertTrue(any(path.suffix in {".txt", ".json"} for path in artifact_files))
+            shared_artifact_files = list(paths["shared_rendered"].glob("*"))
+            main_artifact_files = list(paths["main_rendered"].glob("*"))
+            self.assertTrue(any(path.suffix == ".png" for path in shared_artifact_files))
+            self.assertTrue(any(path.suffix == ".json" for path in shared_artifact_files))
+            self.assertTrue(any(path.suffix == ".txt" for path in main_artifact_files))
 
             telemetry_lines = (
                 result.telemetry_artifact_path.read_text(encoding="utf-8").strip().splitlines()
@@ -455,18 +496,42 @@ class SyncSessionLogTests(unittest.TestCase):
             self.assertEqual(2, len(telemetry_lines))
 
             state = json.loads(result.state_path.read_text(encoding="utf-8"))
-            self.assertEqual("meta/sessions/2026/03/session-123.md", state["markdown_relpath"])
+            self.assertEqual(2, state["version"])
+            self.assertEqual(
+                "meta/sessions/2026/03/session-123/index.md",
+                state["markdown_relpath"],
+            )
+            self.assertEqual(
+                "meta/sessions/2026/03/session-123/merged/session.md",
+                state["merged_markdown_relpath"],
+            )
             self.assertEqual("summary/2026-03-12_09-00-00", state["summary_dir_relpath"])
             self.assertEqual(
                 "summary/2026-03-12_09-00-00/summary.md",
                 state["summary_markdown_relpath"],
             )
             self.assertEqual("summary/2026-03-12_09-00-00/usage.json", state["usage_relpath"])
+            self.assertEqual(
+                "summary/2026-03-12_09-00-00/agents/main/summary.md",
+                state["summary_agents_relpaths"]["main"]["summary_markdown_relpath"],
+            )
+            self.assertEqual(
+                "summary/2026-03-12_09-00-00/agents/agent-helper/summary.md",
+                state["summary_agents_relpaths"]["agent-helper"]["summary_markdown_relpath"],
+            )
+            self.assertEqual(
+                "meta/sessions/2026/03/session-123/agents/main/session.md",
+                state["meta_agents_relpaths"]["main"]["markdown_relpath"],
+            )
+            self.assertEqual(
+                "meta/sessions/2026/03/session-123/agents/agent-helper/session.md",
+                state["meta_agents_relpaths"]["agent-helper"]["markdown_relpath"],
+            )
             self.assertEqual(2, len(state["telemetry_event_ids"]))
 
             index_text = result.index_path.read_text(encoding="utf-8")
             self.assertIn("Claude Session: Audit session summary", index_text)
-            self.assertIn("sessions/2026/03/session-123.md", index_text)
+            self.assertIn("sessions/2026/03/session-123/index.md", index_text)
             self.assertEqual(
                 result.log_root / "summary" / "2026-03-12_09-00-00" / "summary.md",
                 result.summary_path,
@@ -477,25 +542,85 @@ class SyncSessionLogTests(unittest.TestCase):
             )
             self.assertFalse((result.log_root / "summary.md").exists())
             self.assertFalse((result.log_root / "usage.json").exists())
-            self.assertIn("## Conversation", summary_md)
-            self.assertIn("#### Thinking", summary_md)
-            self.assertIn("I should inspect the repository and use tools carefully.", summary_md)
-            self.assertIn("#### Output", summary_md)
-            self.assertIn("I will inspect the repository and keep track of the findings.", summary_md)
-            self.assertIn("#### Tool Call `Bash`", summary_md)
-            self.assertIn("#### Tool Result `tool-1`", summary_md)
-            self.assertIn("Subagent is narrowing the audit to the logging layer.", summary_md)
-            self.assertIn("[agent-helper]", summary_md)
-            self.assertIn("Telemetry cost USD", summary_md)
-            self.assertIn("Open session detail", summary_md)
+            self.assertIn("## Aggregate Usage", summary_md)
+            self.assertIn("## Agents", summary_md)
+            self.assertIn("Open session meta index", summary_md)
+            self.assertIn("Open merged detail", summary_md)
             self.assertIn("Open usage JSON", summary_md)
-            self.assertIn("(../../meta/index.md)", summary_md)
-            self.assertIn("(../../meta/sessions/2026/03/session-123.md)", summary_md)
+            self.assertIn("Open agent summary", summary_md)
+            self.assertIn("Open agent detail", summary_md)
+            self.assertIn("`main`", summary_md)
+            self.assertIn("`agent-helper`", summary_md)
+            self.assertIn("Telemetry cost USD", summary_md)
+            self.assertIn("(../../meta/sessions/2026/03/session-123/index.md)", summary_md)
+            self.assertIn("(../../meta/sessions/2026/03/session-123/merged/session.md)", summary_md)
             self.assertIn("(usage.json)", summary_md)
+            self.assertNotIn("## Conversation", summary_md)
+            self.assertNotIn("I should inspect the repository and use tools carefully.", summary_md)
+            self.assertNotIn("Subagent is narrowing the audit to the logging layer.", summary_md)
             self.assertNotIn("Progress payload", summary_md)
             self.assertNotIn("Remember to capture the rate limit issue.", summary_md)
             self.assertNotIn("file-history-snapshot", summary_md)
             self.assertNotIn("## Telemetry Events", summary_md)
+
+            self.assertIn("## Conversation", main_summary_md)
+            self.assertIn("#### Thinking", main_summary_md)
+            self.assertIn("I should inspect the repository and use tools carefully.", main_summary_md)
+            self.assertIn("#### Output", main_summary_md)
+            self.assertIn(
+                "I will inspect the repository and keep track of the findings.",
+                main_summary_md,
+            )
+            self.assertIn("#### Tool Call `Bash`", main_summary_md)
+            self.assertIn("#### Tool Result `tool-1`", main_summary_md)
+            self.assertIn("(../../../../meta/sessions/2026/03/session-123/agents/main/session.md)", main_summary_md)
+            self.assertIn("(usage.json)", main_summary_md)
+            self.assertNotIn("[agent-helper]", main_summary_md)
+            self.assertNotIn("Subagent inspected the logging layer", main_summary_md)
+
+            self.assertIn("## Conversation", subagent_summary_md)
+            self.assertIn("[agent-helper]", subagent_summary_md)
+            self.assertIn(
+                "Subagent is narrowing the audit to the logging layer.",
+                subagent_summary_md,
+            )
+            self.assertIn(
+                "Subagent inspected the logging layer and found no crash path.",
+                subagent_summary_md,
+            )
+            self.assertIn(
+                "(../../../../meta/sessions/2026/03/session-123/agents/agent-helper/session.md)",
+                subagent_summary_md,
+            )
+            self.assertNotIn("I should inspect the repository and use tools carefully.", subagent_summary_md)
+
+            self.assertIn("# Claude Session: Audit session summary Meta Index", meta_index_md)
+            self.assertIn("Open root summary", meta_index_md)
+            self.assertIn("Open root usage JSON", meta_index_md)
+            self.assertIn("Open merged detail", meta_index_md)
+            self.assertIn("Open summary", meta_index_md)
+            self.assertIn("Open detail", meta_index_md)
+            self.assertIn("artifacts/shared/rendered", meta_index_md)
+            self.assertIn("artifacts/main/rendered", meta_index_md)
+            self.assertIn("artifacts/agent-helper/rendered", meta_index_md)
+
+            self.assertIn("# Claude Session: Audit session summary [main]", main_meta_md)
+            self.assertIn("I should inspect the repository and use tools carefully.", main_meta_md)
+            self.assertIn("Transient upstream error", main_meta_md)
+            self.assertNotIn("[agent-helper]", main_meta_md)
+            self.assertNotIn("Subagent inspected the logging layer", main_meta_md)
+
+            self.assertIn(
+                "# Claude Session: Audit session summary [agent-helper]",
+                subagent_meta_md,
+            )
+            self.assertIn("[agent-helper]", subagent_meta_md)
+            self.assertIn(
+                "Subagent inspected the logging layer and found no crash path.",
+                subagent_meta_md,
+            )
+            self.assertNotIn("I will inspect the repository and keep track of the findings.", subagent_meta_md)
+
             self.assertEqual("session-123", usage_payload["session"]["id"])
             self.assertEqual("Claude Session: Audit session summary", usage_payload["session"]["title"])
             self.assertEqual("Audit session summary", usage_payload["session"]["summary"])
@@ -517,7 +642,34 @@ class SyncSessionLogTests(unittest.TestCase):
                     "/.claude-log/summary/2026-03-12_09-00-00/summary.md"
                 )
             )
-            self.assertTrue(usage_payload["paths"]["session_md"].endswith("/meta/sessions/2026/03/session-123.md"))
+            self.assertTrue(
+                usage_payload["paths"]["session_md"].endswith(
+                    "/meta/sessions/2026/03/session-123/merged/session.md"
+                )
+            )
+            self.assertTrue(
+                usage_payload["paths"]["meta_index_md"].endswith(
+                    "/meta/sessions/2026/03/session-123/index.md"
+                )
+            )
+
+            self.assertEqual("main", main_usage_payload["agent"]["id"])
+            self.assertEqual("main", main_usage_payload["agent"]["key"])
+            self.assertEqual("main", main_usage_payload["agent"]["kind"])
+            self.assertEqual(120, main_usage_payload["transcript_usage"]["input_tokens"])
+            self.assertEqual(45, main_usage_payload["transcript_usage"]["output_tokens"])
+            self.assertEqual(300, main_usage_payload["transcript_usage"]["cache_read_input_tokens"])
+            self.assertIsNone(main_usage_payload["telemetry"])
+            self.assertEqual("session_only", main_usage_payload["telemetry_scope"])
+
+            self.assertEqual("agent-helper", subagent_usage_payload["agent"]["id"])
+            self.assertEqual("agent-helper", subagent_usage_payload["agent"]["key"])
+            self.assertEqual("subagent", subagent_usage_payload["agent"]["kind"])
+            self.assertEqual(15, subagent_usage_payload["transcript_usage"]["input_tokens"])
+            self.assertEqual(9, subagent_usage_payload["transcript_usage"]["output_tokens"])
+            self.assertEqual(12, subagent_usage_payload["transcript_usage"]["cache_read_input_tokens"])
+            self.assertIsNone(subagent_usage_payload["telemetry"])
+            self.assertEqual("session_only", subagent_usage_payload["telemetry_scope"])
 
     def test_sync_is_idempotent_and_dedupes_telemetry(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -632,12 +784,16 @@ class SyncSessionLogTests(unittest.TestCase):
             )
 
             self.assertEqual("session-123", result.session_id)
+            paths = self.get_output_paths(result)
             session_md = result.session_markdown_path.read_text(encoding="utf-8")
             summary_md = result.summary_path.read_text(encoding="utf-8")
+            subagent_summary_md = paths["subagent_summary"].read_text(encoding="utf-8")
             self.assertIn("Subagent inspected the logging layer", session_md)
-            self.assertIn("Subagent inspected the logging layer", summary_md)
-            self.assertIn("Subagent is narrowing the audit to the logging layer.", summary_md)
-            self.assertIn("[agent-helper]", summary_md)
+            self.assertIn("## Agents", summary_md)
+            self.assertNotIn("Subagent inspected the logging layer", summary_md)
+            self.assertIn("Subagent inspected the logging layer", subagent_summary_md)
+            self.assertIn("Subagent is narrowing the audit to the logging layer.", subagent_summary_md)
+            self.assertIn("[agent-helper]", subagent_summary_md)
 
     def test_summary_title_ignores_placeholder_prompts(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -703,10 +859,51 @@ class SyncSessionLogTests(unittest.TestCase):
                 telemetry_dir=fixture["telemetry_dir"],
             )
 
-            summary_md = result.summary_path.read_text(encoding="utf-8")
-            artifact_dir = result.log_root / "meta" / "artifacts" / "session-123" / "rendered"
-            self.assertIn("Open full artifact", summary_md)
+            paths = self.get_output_paths(result)
+            root_summary_md = result.summary_path.read_text(encoding="utf-8")
+            main_summary_md = paths["main_summary"].read_text(encoding="utf-8")
+            artifact_dir = paths["main_rendered"]
+            self.assertNotIn("Open full artifact", root_summary_md)
+            self.assertIn("Open full artifact", main_summary_md)
             self.assertTrue(any(path.suffix == ".txt" for path in artifact_dir.glob("*")))
+
+    def test_sidechain_without_agent_id_uses_source_label_bucket(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fixture = self.make_fixture(Path(tmpdir))
+            subagent_rows = self.load_jsonl(fixture["subagent_path"])
+            for row in subagent_rows:
+                row.pop("agentId", None)
+            self.write_jsonl(fixture["subagent_path"], subagent_rows)
+
+            result = SYNC_MODULE.sync_session_log(
+                hook_input={
+                    "session_id": "session-123",
+                    "transcript_path": str(fixture["transcript_path"]),
+                    "cwd": str(fixture["workspace"]),
+                    "hook_event_name": "Stop",
+                },
+                project_dir=fixture["workspace"],
+                telemetry_dir=fixture["telemetry_dir"],
+            )
+
+            paths = self.get_output_paths(result)
+            subagent_summary_md = paths["subagent_summary"].read_text(encoding="utf-8")
+            subagent_meta_md = paths["subagent_meta"].read_text(encoding="utf-8")
+            state = json.loads(result.state_path.read_text(encoding="utf-8"))
+
+            self.assertTrue(paths["subagent_summary"].exists())
+            self.assertTrue(paths["subagent_usage"].exists())
+            self.assertTrue(paths["subagent_meta"].exists())
+            self.assertIn("Subagent inspected the logging layer", subagent_summary_md)
+            self.assertIn("Subagent inspected the logging layer", subagent_meta_md)
+            self.assertEqual(
+                "summary/2026-03-12_09-00-00/agents/agent-helper/summary.md",
+                state["summary_agents_relpaths"]["agent-helper"]["summary_markdown_relpath"],
+            )
+            self.assertEqual(
+                "meta/sessions/2026/03/session-123/agents/agent-helper/session.md",
+                state["meta_agents_relpaths"]["agent-helper"]["markdown_relpath"],
+            )
 
 
 if __name__ == "__main__":

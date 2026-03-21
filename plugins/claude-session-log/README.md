@@ -5,17 +5,27 @@
 ## 功能
 
 - 为每个 session 生成独立摘要目录：`./.claude-log/summary/<yyyy-mm-dd_hh-mm-ss>/`
-- 在每个 session 摘要目录下写出：
+- 在 session 根目录下写出：
   - `summary.md`
   - `usage.json`
+- 为主 agent 和每个 subagent 分别写出独立摘要：
+  - `summary/<time>/agents/main/summary.md`
+  - `summary/<time>/agents/main/usage.json`
+  - `summary/<time>/agents/<agentKey>/summary.md`
+  - `summary/<time>/agents/<agentKey>/usage.json`
 - 把完整详细产物收拢到：`./.claude-log/meta/`
-- 按会话生成详细 Markdown：`./.claude-log/meta/sessions/YYYY/MM/<session_id>.md`
+- 按会话生成 session 级 meta 总览：`./.claude-log/meta/sessions/YYYY/MM/<session_id>/index.md`
+- 保留 merged 详细时间线：`./.claude-log/meta/sessions/YYYY/MM/<session_id>/merged/session.md`
+- 为主 agent 和每个 subagent 生成独立详细日志：
+  - `meta/sessions/YYYY/MM/<session_id>/agents/main/session.md`
+  - `meta/sessions/YYYY/MM/<session_id>/agents/<agentKey>/session.md`
 - 生成详细索引：`./.claude-log/meta/index.md`
 - 记录同步状态：`./.claude-log/meta/state/<session_id>.json`
-- 为大文本、结构化对象和 base64 图片生成侧写文件：`./.claude-log/meta/artifacts/<session_id>/`
+- 为 shared/main/subagent 大文本、结构化对象和 base64 图片生成侧写文件
 - 合并当前 session 的 telemetry，补充 token、cost、duration、TTFT 等指标
-- 自动并入同一主 session 下的 subagent transcript
-- `summary.md` 默认保留必要对话、`thinking`、模型输出和工具调用记录
+- 自动并入同一主 session 下的 subagent transcript，并按 agent 分桶输出
+- session 根 `summary.md` 只保留总览、aggregate usage 和 agent 跳转入口
+- agent 级 `summary.md` 保留必要对话、`thinking`、模型输出和工具调用记录
 
 ## 安装
 
@@ -39,21 +49,46 @@
 .claude-log/
 ├── summary/<yyyy-mm-dd_hh-mm-ss>/
 │   ├── summary.md
-│   └── usage.json
+│   ├── usage.json
+│   └── agents/
+│       ├── main/
+│       │   ├── summary.md
+│       │   └── usage.json
+│       └── <agentKey>/
+│           ├── summary.md
+│           └── usage.json
 └── meta/
     ├── index.md
-    ├── sessions/YYYY/MM/<session_id>.md
     ├── state/<session_id>.json
-    └── artifacts/<session_id>/
-        ├── telemetry.jsonl
-        └── rendered/
+    └── sessions/YYYY/MM/<session_id>/
+        ├── index.md
+        ├── merged/
+        │   └── session.md
+        ├── agents/
+        │   ├── main/
+        │   │   └── session.md
+        │   └── <agentKey>/
+        │       └── session.md
+        └── artifacts/
+            ├── shared/
+            │   ├── telemetry.jsonl
+            │   └── rendered/
+            ├── main/
+            │   └── rendered/
+            └── <agentKey>/
+                └── rendered/
 ```
 
 其中：
 
-- `summary/<yyyy-mm-dd_hh-mm-ss>/summary.md` 是该 session 的人类可读入口，只保留主线信息
-- `summary/<yyyy-mm-dd_hh-mm-ss>/usage.json` 是该 session 的结构化用量统计，适合脚本或看板读取
+- `summary/<yyyy-mm-dd_hh-mm-ss>/summary.md` 是该 session 的总览页，只保留元信息、aggregate usage 和 agent 入口
+- `summary/<yyyy-mm-dd_hh-mm-ss>/usage.json` 是该 session 的 aggregate 用量统计
+- `summary/<yyyy-mm-dd_hh-mm-ss>/agents/*/summary.md` 是各 agent 的人类可读正文
+- `summary/<yyyy-mm-dd_hh-mm-ss>/agents/*/usage.json` 是各 agent 的 transcript 级用量统计
 - `summary/` 目录名默认取 session 首条事件时间，格式为 `YYYY-MM-DD_HH-MM-SS`（北京时间，UTC+8）
+- `meta/sessions/.../index.md` 是 session 级 meta 总览
+- `meta/sessions/.../merged/session.md` 保留完整跨 agent 合并时间线
+- `meta/sessions/.../agents/*/session.md` 是各 agent 的详细时间线
 - `meta/` 保存完整 transcript、telemetry、state 和侧写文件，适合调试与取证
 
 ## 调试
@@ -90,7 +125,8 @@ python3 scripts/sync_session_log.py \
 
 - 首版只保证插件启用后的新会话/新事件持续同步，不做历史全量回填。
 - telemetry 合并是 best-effort，只吸收 `session_id` 匹配的事件。
-- 大 payload 会被拆到 `meta/artifacts/`，Markdown 里只保留链接与摘要。
+- 大 payload 会被拆到 `meta/sessions/.../artifacts/`，Markdown 里只保留链接与摘要。
 - 本次版本不再继续写旧的顶层 `summary.md` / `usage.json`，会改为 `summary/<yyyy-mm-dd_hh-mm-ss>/...`。
+- agent 级 `usage.json` 不拆 telemetry，`telemetry` 会显式标记为 session-only。
 - 本次版本把旧的顶层 `index.md`、`sessions/`、`state/`、`artifacts/` 迁到了 `meta/` 下，不再继续写旧路径。
 - 修改 `hooks/hooks.json` 或脚本后，需要重启 Claude Code 会话，新的 hook 配置才会生效。
