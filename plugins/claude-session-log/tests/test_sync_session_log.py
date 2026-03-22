@@ -5,6 +5,7 @@ import importlib.util
 import json
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
@@ -435,6 +436,12 @@ class SyncSessionLogTests(unittest.TestCase):
             "subagent_rendered": meta_session_dir / "artifacts" / "agent-helper" / "rendered",
         }
 
+    def summary_dirs(self, workspace: Path) -> list[Path]:
+        summary_root = workspace / ".claude-log" / "summary"
+        if not summary_root.exists():
+            return []
+        return sorted(path for path in summary_root.iterdir() if path.is_dir())
+
     def test_sync_renders_supported_events_and_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             fixture = self.make_fixture(Path(tmpdir))
@@ -519,6 +526,7 @@ class SyncSessionLogTests(unittest.TestCase):
                 "summary/2026-03-12_09-00-00/agents/agent-helper/summary.md",
                 state["summary_agents_relpaths"]["agent-helper"]["summary_markdown_relpath"],
             )
+
             self.assertEqual(
                 "meta/sessions/2026/03/session-123/agents/main/session.md",
                 state["meta_agents_relpaths"]["main"]["markdown_relpath"],
@@ -718,6 +726,98 @@ class SyncSessionLogTests(unittest.TestCase):
                 second.telemetry_artifact_path.read_text(encoding="utf-8").strip().splitlines()
             )
             self.assertEqual(2, len(telemetry_lines))
+
+    def test_missing_state_reuses_existing_summary_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fixture = self.make_fixture(Path(tmpdir))
+            first = SYNC_MODULE.sync_session_log(
+                hook_input={
+                    "session_id": "session-123",
+                    "transcript_path": str(fixture["transcript_path"]),
+                    "cwd": str(fixture["workspace"]),
+                    "hook_event_name": "PostToolUse",
+                },
+                project_dir=fixture["workspace"],
+                telemetry_dir=fixture["telemetry_dir"],
+            )
+
+            first.state_path.unlink()
+
+            second = SYNC_MODULE.sync_session_log(
+                hook_input={
+                    "session_id": "session-123",
+                    "transcript_path": str(fixture["transcript_path"]),
+                    "cwd": str(fixture["workspace"]),
+                    "hook_event_name": "SessionEnd",
+                },
+                project_dir=fixture["workspace"],
+                telemetry_dir=fixture["telemetry_dir"],
+            )
+
+            self.assertEqual(first.summary_path, second.summary_path)
+            self.assertEqual(
+                ["2026-03-12_09-00-00"],
+                [path.name for path in self.summary_dirs(fixture["workspace"])],
+            )
+
+    def test_concurrent_sync_reuses_single_summary_directory_for_same_session(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fixture = self.make_fixture(Path(tmpdir))
+            original_write_json = SYNC_MODULE.write_json
+            first_summary_write_started = threading.Event()
+            release_first_writer = threading.Event()
+            blocked_once = {"value": False}
+            results = []
+            errors = []
+
+            def patched_write_json(path: Path, payload: dict) -> None:
+                if (
+                    path.name == "usage.json"
+                    and "/summary/" in str(path).replace("\\", "/")
+                    and not blocked_once["value"]
+                ):
+                    blocked_once["value"] = True
+                    first_summary_write_started.set()
+                    release_first_writer.wait(timeout=5)
+                original_write_json(path, payload)
+
+            def run_sync(label: str) -> None:
+                try:
+                    result = SYNC_MODULE.sync_session_log(
+                        hook_input={
+                            "session_id": "session-123",
+                            "transcript_path": str(fixture["transcript_path"]),
+                            "cwd": str(fixture["workspace"]),
+                            "hook_event_name": "PostToolUse",
+                        },
+                        project_dir=fixture["workspace"],
+                        telemetry_dir=fixture["telemetry_dir"],
+                    )
+                    results.append((label, result.summary_path))
+                except Exception as exc:  # pragma: no cover - test should stay green
+                    errors.append((label, repr(exc)))
+
+            try:
+                SYNC_MODULE.write_json = patched_write_json
+                first = threading.Thread(target=run_sync, args=("first",))
+                second = threading.Thread(target=run_sync, args=("second",))
+
+                first.start()
+                self.assertTrue(first_summary_write_started.wait(timeout=5))
+                second.start()
+                release_first_writer.set()
+                first.join(timeout=5)
+                second.join(timeout=5)
+            finally:
+                SYNC_MODULE.write_json = original_write_json
+
+            self.assertEqual([], errors)
+            self.assertEqual(2, len(results))
+            self.assertEqual(results[0][1], results[1][1])
+            self.assertEqual(
+                ["2026-03-12_09-00-00"],
+                [path.name for path in self.summary_dirs(fixture["workspace"])],
+            )
 
     def test_legacy_session_id_summary_path_migrates_to_timestamp_directory(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
