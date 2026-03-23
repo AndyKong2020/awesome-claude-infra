@@ -437,7 +437,7 @@ class SyncSessionLogTests(unittest.TestCase):
         }
 
     def summary_dirs(self, workspace: Path) -> list[Path]:
-        summary_root = workspace / ".claude-log" / "summary"
+        summary_root = workspace / ".agents-log" / "summary"
         if not summary_root.exists():
             return []
         return sorted(path for path in summary_root.iterdir() if path.is_dir())
@@ -647,7 +647,7 @@ class SyncSessionLogTests(unittest.TestCase):
             self.assertIn("glm-5", usage_payload["models"])
             self.assertTrue(
                 usage_payload["paths"]["summary_md"].endswith(
-                    "/.claude-log/summary/2026-03-12_09-00-00/summary.md"
+                    "/.agents-log/summary/2026-03-12_09-00-00/summary.md"
                 )
             )
             self.assertTrue(
@@ -822,7 +822,7 @@ class SyncSessionLogTests(unittest.TestCase):
     def test_legacy_session_id_summary_path_migrates_to_timestamp_directory(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             fixture = self.make_fixture(Path(tmpdir))
-            log_root = fixture["workspace"] / ".claude-log"
+            log_root = fixture["workspace"] / ".agents-log"
             legacy_dir = log_root / "summary" / "session-123"
             legacy_dir.mkdir(parents=True, exist_ok=True)
             (legacy_dir / "summary.md").write_text("legacy summary", encoding="utf-8")

@@ -1,10 +1,10 @@
 # claude-session-log
 
-`claude-session-log` 是一个 Claude Code 插件。它通过 hooks 持续同步当前会话的 transcript 与 telemetry，并把结果落到项目内的 `./.claude-log`。
+`claude-session-log` 是一个 Claude Code 插件。它通过 hooks 持续同步当前会话的 transcript 与 telemetry，并把结果落到项目内的 `./.agents-log`。
 
 ## 功能
 
-- 为每个 session 生成独立摘要目录：`./.claude-log/summary/<yyyy-mm-dd_hh-mm-ss>/`
+- 为每个 session 生成独立摘要目录：`./.agents-log/summary/<yyyy-mm-dd_hh-mm-ss>/`
 - 在 session 根目录下写出：
   - `summary.md`
   - `usage.json`
@@ -13,14 +13,14 @@
   - `summary/<time>/agents/main/usage.json`
   - `summary/<time>/agents/<agentKey>/summary.md`
   - `summary/<time>/agents/<agentKey>/usage.json`
-- 把完整详细产物收拢到：`./.claude-log/meta/`
-- 按会话生成 session 级 meta 总览：`./.claude-log/meta/sessions/YYYY/MM/<session_id>/index.md`
-- 保留 merged 详细时间线：`./.claude-log/meta/sessions/YYYY/MM/<session_id>/merged/session.md`
+- 把完整详细产物收拢到：`./.agents-log/meta/`
+- 按会话生成 session 级 meta 总览：`./.agents-log/meta/sessions/YYYY/MM/<session_id>/index.md`
+- 保留 merged 详细时间线：`./.agents-log/meta/sessions/YYYY/MM/<session_id>/merged/session.md`
 - 为主 agent 和每个 subagent 生成独立详细日志：
   - `meta/sessions/YYYY/MM/<session_id>/agents/main/session.md`
   - `meta/sessions/YYYY/MM/<session_id>/agents/<agentKey>/session.md`
-- 生成详细索引：`./.claude-log/meta/index.md`
-- 记录同步状态：`./.claude-log/meta/state/<session_id>.json`
+- 生成详细索引：`./.agents-log/meta/index.md`
+- 记录同步状态：`./.agents-log/meta/state/<session_id>.json`
 - 为 shared/main/subagent 大文本、结构化对象和 base64 图片生成侧写文件
 - 合并当前 session 的 telemetry，补充 token、cost、duration、TTFT 等指标
 - 自动并入同一主 session 下的 subagent transcript，并按 agent 分桶输出
@@ -41,12 +41,12 @@
 /plugin install claude-session-log@awesome-claude-infra
 ```
 
-启用后，新启动的 Claude Code 会话会在关键 hook 事件上持续刷新 `./.claude-log`。
+启用后，新启动的 Claude Code 会话会在关键 hook 事件上持续刷新 `./.agents-log`。
 
 ## 输出目录
 
 ```text
-.claude-log/
+.agents-log/
 ├── summary/<yyyy-mm-dd_hh-mm-ss>/
 │   ├── summary.md
 │   ├── usage.json
@@ -118,7 +118,7 @@ python3 scripts/sync_session_log.py \
 插件内部错误会写入：
 
 ```text
-.claude-log/plugin-errors.log
+.agents-log/plugin-errors.log
 ```
 
 ## 已知限制
@@ -127,6 +127,7 @@ python3 scripts/sync_session_log.py \
 - telemetry 合并是 best-effort，只吸收 `session_id` 匹配的事件。
 - 大 payload 会被拆到 `meta/sessions/.../artifacts/`，Markdown 里只保留链接与摘要。
 - 本次版本不再继续写旧的顶层 `summary.md` / `usage.json`，会改为 `summary/<yyyy-mm-dd_hh-mm-ss>/...`。
+- 新版本默认写入 `./.agents-log`，不再向 `./.claude-log` 写新产物。
 - agent 级 `usage.json` 不拆 telemetry，`telemetry` 会显式标记为 session-only。
 - 本次版本把旧的顶层 `index.md`、`sessions/`、`state/`、`artifacts/` 迁到了 `meta/` 下，不再继续写旧路径。
 - 修改 `hooks/hooks.json` 或脚本后，需要重启 Claude Code 会话，新的 hook 配置才会生效。

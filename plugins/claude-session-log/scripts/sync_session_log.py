@@ -31,6 +31,7 @@ SUMMARY_TEXT_INLINE_LIMIT = 4000
 SUMMARY_VALUE_INLINE_LIMIT = 1200
 STATE_VERSION = 2
 BEIJING_TIMEZONE = timezone(timedelta(hours=8))
+LOG_ROOT_DIRNAME = ".agents-log"
 
 IMAGE_EXTENSIONS = {
     "image/png": "png",
@@ -230,7 +231,7 @@ def sync_session_log(
         if project_dir is not None
         else resolve_project_dir(hook_input, os.environ.get("CLAUDE_PROJECT_DIR"))
     )
-    log_root = project_root / ".claude-log"
+    log_root = project_root / LOG_ROOT_DIRNAME
     meta_root = log_root / "meta"
     state_dir = meta_root / "state"
     state_dir.mkdir(parents=True, exist_ok=True)
@@ -500,7 +501,7 @@ def resolve_project_dir(hook_input: dict[str, Any], env_project_dir: str | None)
 
 
 def determine_log_root(hook_input: dict[str, Any], project_dir: str | None) -> Path:
-    return resolve_project_dir(hook_input, project_dir) / ".claude-log"
+    return resolve_project_dir(hook_input, project_dir) / LOG_ROOT_DIRNAME
 
 
 def resolve_session_paths(hook_input: dict[str, Any]) -> SessionPaths:

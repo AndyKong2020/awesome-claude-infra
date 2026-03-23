@@ -30,9 +30,9 @@
 
 ### claude-session-log
 
-- 版本：`0.4.0`
+- 版本：`0.4.2`
 - 分类：`utilities`
-- 作用：把 Claude Code 的 transcript 与 telemetry 增量同步为项目内日志，生成按时间命名的 session 总览、按 agent 拆分的 `summary/`，以及按 agent 拆分的 `meta/` 详细产物
+- 作用：把 Claude Code 的 transcript 与 telemetry 增量同步为项目内日志，默认写到 `./.agents-log`，并生成按时间命名的 session 总览、按 agent 拆分的 `summary/`，以及按 agent 拆分的 `meta/` 详细产物
 
 ### gitcode-api
 

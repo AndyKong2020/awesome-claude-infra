@@ -1,6 +1,6 @@
 {
   "name": "claude-session-log",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "将 Claude Code 的 transcript 与 telemetry 增量整理为按 session 与 agent 分目录的摘要、用量 JSON 和详细日志",
   "author": {
     "name": "AndyKong",
